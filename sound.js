@@ -1,18 +1,27 @@
 // sound.js
 export class SoundFX {
     constructor() {
-        // Create audio context immediately
-        this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        // Create audio context but don't initialize it yet
+        this.audioContext = null;
         this.themeLoop = null;
         this.isThemePlaying = false;
         this.currentSection = 0;
-        
-        // Try to auto-start audio context and play theme
-        this.autoStart();
+    }
+
+    init() {
+        // Only initialize audio context if it hasn't been created yet
+        if (!this.audioContext) {
+            this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
     }
 
     async autoStart() {
         try {
+            // Initialize audio context if needed
+            if (!this.audioContext) {
+                this.init();
+            }
+
             // Try to resume audio context
             if (this.audioContext.state === 'suspended') {
                 await this.audioContext.resume();
@@ -31,6 +40,9 @@ export class SoundFX {
             console.log('Audio autoplay failed, will start on user interaction');
             // Add click handler to document as fallback
             const startAudio = async () => {
+                if (!this.audioContext) {
+                    this.init();
+                }
                 if (this.audioContext.state === 'suspended') {
                     await this.audioContext.resume();
                     this.playTheme();
@@ -42,25 +54,25 @@ export class SoundFX {
     }
 
     playCollect() {
-        if (this.audioContext.state === 'suspended') return;
+        if (!this.audioContext || this.audioContext.state === 'suspended') return;
         this.playNote(880, 0.1, 'square');
         setTimeout(() => this.playNote(1320, 0.1, 'square'), 50);
     }
 
     playGameOver() {
-        if (this.audioContext.state === 'suspended') return;
+        if (!this.audioContext || this.audioContext.state === 'suspended') return;
         this.playNote(440, 0.2, 'square');
         setTimeout(() => this.playNote(330, 0.2, 'square'), 200);
         setTimeout(() => this.playNote(220, 0.3, 'square'), 400);
     }
 
     playMove() {
-        if (this.audioContext.state === 'suspended') return;
+        if (!this.audioContext || this.audioContext.state === 'suspended') return;
         this.playNote(220, 0.05, 'square', 0.1);
     }
 
     playNote(frequency, duration, type = 'square', volume = 0.2) {
-        if (this.audioContext.state === 'suspended') return;
+        if (!this.audioContext || this.audioContext.state === 'suspended') return;
         
         const oscillator = this.audioContext.createOscillator();
         const gainNode = this.audioContext.createGain();
@@ -81,7 +93,7 @@ export class SoundFX {
     }
 
     playArpeggio(baseNote, pattern, duration, delay) {
-        if (this.audioContext.state === 'suspended') return;
+        if (!this.audioContext || this.audioContext.state === 'suspended') return;
         pattern.forEach((multiplier, index) => {
             setTimeout(() => {
                 this.playNote(baseNote * multiplier, duration, 'square', 0.1);
@@ -90,7 +102,12 @@ export class SoundFX {
     }
 
     playTheme() {
-        if (this.audioContext.state === 'suspended' || this.isThemePlaying) return;
+        // Initialize audio context if it hasn't been created yet
+        if (!this.audioContext) {
+            this.init();
+        }
+
+        if (!this.audioContext || this.audioContext.state === 'suspended' || this.isThemePlaying) return;
         this.isThemePlaying = true;
 
         // Define multiple sections of the theme
