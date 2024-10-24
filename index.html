@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Retro Snake</title>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="game-container">
+        <div id="start-menu">
+            <h1 class="game-title">SNAKE</h1>
+            <button class="menu-button" id="play-btn">PLAY GAME</button>
+            <button class="menu-button" id="how-to-play-btn">HOW TO PLAY</button>
+            <div class="high-score">HIGH SCORE: <span id="high-score">0</span></div>
+            <div class="controls-info">Use arrow keys to move</div>
+        </div>
+
+        <!-- Add the how-to-play menu -->
+        <div id="how-to-play-menu">
+            <h2>How to Play</h2>
+            <div class="instructions">
+                <p>Use the arrow keys to control the snake</p>
+                <p>Collect food to grow longer</p>
+                <p>Avoid hitting the walls and yourself</p>
+                <p>Try to get the highest score!</p>
+            </div>
+            <button id="back-to-menu-btn">BACK TO MENU</button>
+        </div>
+
+        <div id="score">Score: 0</div>
+        <canvas id="gameCanvas"></canvas>
+        <canvas id="effects-canvas"></canvas>
+        <div id="game-over">
+            <h2>Game Over!</h2>
+            <p>Final Score: <span id="final-score">0</span></p>
+            <button id="start-btn">Play Again</button>
+        </div>
+    </div>
+
+    <script type="module">
+        // Import external modules
+        import { SoundFX } from './sound.js';
+        import { EffectsManager } from './effects.js';
+    
+        const GAME_STATES = {
+            MENU: 'menu',
+            HOW_TO_PLAY: 'howToPlay',
+            PLAYING: 'playing',
+            PAUSED: 'paused',
+            GAME_OVER: 'gameOver'
+        };
+    
+        const DIRECTIONS = {
+            UP: { x: 0, y: -1 },
+            DOWN: { x: 0, y: 1 },
+            LEFT: { x: -1, y: 0 },
+            RIGHT: { x: 1, y: 0 }
+        };
+    
+        const config = {
+            gridSize: 20,
+            initialSpeed: 200,
+            speedIncrease: 2,
+            minSpeed: 80,
+            colors: {
+                background: '#000000',
+                grid: '#1a1a1a',
+                snake: '#00ff00',
+                food: '#ff00ff',
+                border: '#00ffff',
+                obstacle: '#ff0000'
+            }
+        };
+    
+        class GameStateManager {
+            constructor() {
+                this.currentState = GAME_STATES.MENU;
+                this.subscribers = [];
+            }
+    
+            setState(newState) {
+                this.currentState = newState;
+                this.notifySubscribers();
+            }
+    
+            subscribe(callback) {
+                this.subscribers.push(callback);
+            }
+    
+            notifySubscribers() {
+                this.subscribers.forEach(callback => callback(this.currentState));
+            }
+        }
+    
+        class Player {
+            constructor(id, startingPosition) {
+                this.id = id;
+                this.snake = [startingPosition];
+                this.direction = DIRECTIONS.RIGHT;
+                this.score = 0;
+                this.isAlive = true;
+                this.growing = false;
+            }
+    
+            move() {
+                const head = { ...this.snake[0] };
+                head.x += this.direction.x;
+                head.y += this.direction.y;
+                this.snake.unshift(head);
+                if (!this.growing) {
+                    this.snake.pop();
+                }
+                this.growing = false;
+            }
+    
+            grow() {
+                this.growing = true;
+                this.score += 10;
+            }
+    
+            setDirection(newDirection) {
+                // Prevent 180-degree turns
+                if (this.direction.x + newDirection.x === 0 && 
+                    this.direction.y + newDirection.y === 0) {
+                    return;
+                }
+                this.direction = newDirection;
+            }
+        }
+    
+        class FoodManager {
+            constructor(gridSize) {
+                this.gridSize = gridSize;
+                this.position = this.generateFood();
+            }
+    
+            generateFood() {
+                return {
+                    x: Math.floor(Math.random() * this.gridSize),
+                    y: Math.floor(Math.random() * this.gridSize)
+                };
+            }
+    
+            repositionFood(snakes) {
+                do {
+                    this.position = this.generateFood();
+                } while (this.isPositionOccupied(snakes));
+            }
+    
+            isPositionOccupied(snakes) {
+                return snakes.some(snake => 
+                    snake.some(segment => 
+                        segment.x === this.position.x && segment.y === this.position.y
+                    )
+                );
+            }
+        }
+    
+        class CollisionManager {
+            constructor(gridSize) {
+                this.gridSize = gridSize;
+            }
+    
+            checkCollisions(player, otherPlayers = [], obstacles = []) {
+                return (
+                    this.checkWallCollision(player.snake[0]) ||
+                    this.checkSelfCollision(player.snake) ||
+                    this.checkPlayersCollision(player.snake[0], otherPlayers) ||
+                    this.checkObstacleCollision(player.snake[0], obstacles)
+                );
+            }
+    
+            checkWallCollision(head) {
+                return (
+                    head.x < 0 ||
+                    head.x >= this.gridSize ||
+                    head.y < 0 ||
+                    head.y >= this.gridSize
+                );
+            }
+    
+            checkSelfCollision(snake) {
+                const head = snake[0];
+                return snake.slice(1).some(segment => 
+                    segment.x === head.x && segment.y === head.y
+                );
+            }
+    
+            checkPlayersCollision(head, otherPlayers) {
+                return otherPlayers.some(player =>
+                    player.snake.some(segment =>
+                        segment.x === head.x && segment.y === head.y
+                    )
+                );
+            }
+    
+            checkObstacleCollision(head, obstacles) {
+                return obstacles.some(obstacle =>
+                    obstacle.x === head.x && obstacle.y === head.y
+                );
+            }
+        }
+    
+        class Renderer {
+            constructor(canvas) {
+                this.canvas = canvas;
+                this.ctx = canvas.getContext('2d');
+                this.setupCanvas();
+                this.glowIntensity = 0;
+                this.glowIncreasing = true;
+            }
+    
+            setupCanvas() {
+                this.canvas.width = 600;
+                this.canvas.height = 600;
+                this.cellSize = this.canvas.width / config.gridSize;
+            }
+    
+            render(gameState, players, food, obstacles = []) {
+                this.clear();
+                this.drawGrid();
+                this.drawFood(food);
+                this.drawObstacles(obstacles);
+                players.forEach(player => this.drawSnake(player));
+                this.updateGlow();
+            }
+    
+            updateGlow() {
+                if (this.glowIncreasing) {
+                    this.glowIntensity += 0.05;
+                    if (this.glowIntensity >= 1) this.glowIncreasing = false;
+                } else {
+                    this.glowIntensity -= 0.05;
+                    if (this.glowIntensity <= 0) this.glowIncreasing = true;
+                }
+            }
+    
+            clear() {
+                this.ctx.fillStyle = config.colors.background;
+                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+            }
+    
+            drawGrid() {
+                this.ctx.strokeStyle = config.colors.grid;
+                this.ctx.lineWidth = 0.5;
+                for (let i = 0; i <= config.gridSize; i++) {
+                    const pos = i * this.cellSize;
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(pos, 0);
+                    this.ctx.lineTo(pos, this.canvas.height);
+                    this.ctx.stroke();
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(0, pos);
+                    this.ctx.lineTo(this.canvas.width, pos);
+                    this.ctx.stroke();
+                }
+            }
+    
+            drawSnake(player) {
+                player.snake.forEach((segment, index) => {
+                    const x = segment.x * this.cellSize;
+                    const y = segment.y * this.cellSize;
+                    
+                    this.ctx.shadowColor = config.colors.snake;
+                    this.ctx.shadowBlur = 15;
+                    
+                    this.ctx.fillStyle = config.colors.snake;
+                    this.ctx.beginPath();
+                    this.ctx.roundRect(
+                        x + 1,
+                        y + 1,
+                        this.cellSize - 2,
+                        this.cellSize - 2,
+                        5
+                    );
+                    this.ctx.fill();
+    
+                    if (index === 0) {
+                        this.ctx.fillStyle = '#ffffff';
+                        this.ctx.beginPath();
+                        this.ctx.arc(
+                            x + this.cellSize / 2,
+                            y + this.cellSize / 2,
+                            this.cellSize / 4,
+                            0,
+                            Math.PI * 2
+                        );
+                        this.ctx.fill();
+                    }
+                    
+                    this.ctx.shadowBlur = 0;
+                });
+            }
+    
+            drawFood(food) {
+                const x = food.position.x * this.cellSize;
+                const y = food.position.y * this.cellSize;
+                
+                this.ctx.shadowColor = config.colors.food;
+                this.ctx.shadowBlur = 15 * this.glowIntensity;
+                
+                this.ctx.fillStyle = config.colors.food;
+                this.ctx.beginPath();
+                this.ctx.roundRect(
+                    x + 1,
+                    y + 1,
+                    this.cellSize - 2,
+                    this.cellSize - 2,
+                    5
+                );
+                this.ctx.fill();
+                
+                this.ctx.shadowBlur = 0;
+            }
+    
+            drawObstacles(obstacles) {
+                obstacles.forEach(obstacle => {
+                    const x = obstacle.x * this.cellSize;
+                    const y = obstacle.y * this.cellSize;
+                    
+                    this.ctx.shadowColor = config.colors.obstacle;
+                    this.ctx.shadowBlur = 15;
+                    
+                    this.ctx.fillStyle = config.colors.obstacle;
+                    this.ctx.beginPath();
+                    this.ctx.roundRect(
+                        x + 1,
+                        y + 1,
+                        this.cellSize - 2,
+                        this.cellSize - 2,
+                        5
+                    );
+                    this.ctx.fill();
+                    
+                    this.ctx.shadowBlur = 0;
+                });
+            }
+        }
+    
+        class GameController {
+            constructor(canvas, effectsCanvas) {
+                this.stateManager = new GameStateManager();
+                this.collisionManager = new CollisionManager(config.gridSize);
+                this.foodManager = new FoodManager(config.gridSize);
+                this.renderer = new Renderer(canvas);
+                this.effectsManager = new EffectsManager(effectsCanvas, canvas);
+                this.soundFX = new SoundFX();
+                this.players = [];
+                this.gameLoop = null;
+                this.effectsLoop = null;
+                this.baseSpeed = config.initialSpeed;
+                this.speed = config.initialSpeed;
+                this.obstacles = [];
+                this.maxObstacles = 5;
+                this.foodIsMoving = false;
+                this.foodMoveInterval = null;
+                
+                this.setupEventListeners();
+                this.stateManager.subscribe(this.handleStateChange.bind(this));
+                this.stateManager.setState(GAME_STATES.MENU);
+            }
+    
+            handleStateChange(newState) {
+                document.getElementById('start-menu').style.display = 'none';
+                document.getElementById('how-to-play-menu').style.display = 'none';
+                document.getElementById('game-over').style.display = 'none';
+                document.getElementById('score').style.display = 'none';
+    
+                switch(newState) {
+                    case GAME_STATES.MENU:
+                        this.stopGame();
+                        document.getElementById('start-menu').style.display = 'flex';
+                        this.soundFX.playTheme();
+                        break;
+                    case GAME_STATES.HOW_TO_PLAY:
+                        this.stopGame();
+                        document.getElementById('how-to-play-menu').style.display = 'flex';
+                        break;
+                    case GAME_STATES.PLAYING:
+                        document.getElementById('score').style.display = 'block';
+                        this.soundFX.stopTheme();
+                        this.initGame();
+                        break;
+                    case GAME_STATES.GAME_OVER:
+                        document.getElementById('game-over').style.display = 'block';
+                        break;
+                }
+            }
+    
+            stopGame() {
+                if (this.gameLoop) {
+                    clearInterval(this.gameLoop);
+                    this.gameLoop = null;
+                }
+                if (this.effectsLoop) {
+                    cancelAnimationFrame(this.effectsLoop);
+                    this.effectsLoop = null;
+                }
+                if (this.foodMoveInterval) {
+                    clearInterval(this.foodMoveInterval);
+                    this.foodMoveInterval = null;
+                }
+                this.foodIsMoving = false;
+                this.obstacles = [];
+            }
+    
+            initGame() {
+                this.stopGame();
+                this.players = [];
+                this.addPlayer(1, { x: 5, y: 5 });
+                this.speed = this.baseSpeed;
+                this.foodManager.repositionFood(this.players.map(p => p.snake));
+                document.getElementById('score').textContent = 'Score: 0';
+                this.startGameLoop();
+                this.startEffectsLoop();
+            }
+    
+            addPlayer(id, startingPosition) {
+                this.players.push(new Player(id, startingPosition));
+            }
+    
+            startGameLoop() {
+                if (this.gameLoop) {
+                    clearInterval(this.gameLoop);
+                }
+                this.gameLoop = setInterval(() => {
+                    this.update();
+                }, this.speed);
+            }
+    
+            startEffectsLoop() {
+                if (this.effectsLoop) cancelAnimationFrame(this.effectsLoop);
+                const updateEffects = () => {
+                    this.effectsManager.update();
+                    this.effectsLoop = requestAnimationFrame(updateEffects);
+                };
+                updateEffects();
+            }
+    
+            update() {
+                this.players.forEach(player => {
+                    if (!player.isAlive) return;
+
+                    const prevHead = { ...player.snake[0] };
+                    player.move();
+                    this.soundFX.playMove();
+
+                    // Create trail effects
+                    const cellSize = this.renderer.cellSize;
+                    player.snake.forEach(segment => {
+                        this.effectsManager.createTrail(
+                            segment.x * cellSize + cellSize/2,
+                            segment.y * cellSize + cellSize/2,
+                            config.colors.snake
+                        );
+                    });
+
+                    // Check wall proximity
+                    player.snake.forEach(segment => {
+                        if (segment.x === 0 || segment.x === config.gridSize - 1 ||
+                            segment.y === 0 || segment.y === config.gridSize - 1) {
+                            this.effectsManager.createWallSparks(segment);
+                        }
+                    });
+
+                    // Check food collision
+                    const head = player.snake[0];
+                    if (head.x === this.foodManager.position.x && 
+                        head.y === this.foodManager.position.y) {
+                        player.grow();
+                        this.foodManager.repositionFood(
+                            this.players.map(p => p.snake)
+                        );
+                        this.increaseSpeed();
+                        
+                        this.soundFX.playCollect();
+                        
+                        this.effectsManager.createExplosion(
+                            head.x * cellSize + cellSize/2,
+                            head.y * cellSize + cellSize/2,
+                            config.colors.food
+                        );
+                        
+                        // Fixed score update
+                        const scoreElement = document.getElementById('score');
+                        scoreElement.textContent = `Score: ${player.score}`;
+                        scoreElement.classList.add('glow');
+                        setTimeout(() => scoreElement.classList.remove('glow'), 500);
+                    }
+
+                    // Check collisions
+                    const otherPlayers = this.players.filter(p => p.id !== player.id);
+                    if (this.collisionManager.checkCollisions(player, otherPlayers, this.obstacles)) {
+                        const head = player.snake[0];
+                        const cellSize = this.renderer.cellSize;
+                        
+                        // Create collision effect
+                        this.effectsManager.createCollisionEffect(
+                            head, 
+                            this.collisionManager.checkWallCollision(head)
+                        );
+                        
+                        // Delay game over to see collision effects
+                        setTimeout(() => {
+                            player.isAlive = false;
+                            if (this.players.every(p => !p.isAlive)) {
+                                this.gameOver();
+                            }
+                        }, 500);
+                    }
+                });
+
+                this.renderer.render(
+                    this.stateManager.currentState, 
+                    this.players, 
+                    this.foodManager,
+                    this.obstacles
+                );
+            }
+
+        increaseSpeed() {
+            // Make speed increase more gradual
+            // Reduce speed every 100 points instead of 50
+            // And reduce by 3ms instead of 5ms
+            const scoreBasedReduction = Math.floor(this.players[0].score / 100) * 3;
+            this.speed = Math.max(
+                config.minSpeed,
+                this.baseSpeed - scoreBasedReduction
+            );
+            this.startGameLoop();
+            
+            // Start moving food at higher score (150 points instead of 100)
+            if (this.players[0].score >= 150 && !this.foodIsMoving) {
+                this.startMovingFood();
+            }
+            
+            // Add obstacles starting at higher score (250 points instead of 200)
+            if (this.players[0].score >= 250) {
+                this.updateObstacles();
+            }
+        }
+
+        startMovingFood() {
+            this.foodIsMoving = true;
+            
+            // Make food movement slower and more predictable
+            // Base interval is 2000ms (2 seconds) instead of 1000ms
+            // Minimum interval is 800ms instead of 300ms
+            // Score-based reduction is more gradual
+            const moveInterval = Math.max(
+                2000 - Math.floor((this.players[0].score - 150) / 50) * 100,
+                800
+            );
+            
+            // Clear any existing interval before setting a new one
+            if (this.foodMoveInterval) {
+                clearInterval(this.foodMoveInterval);
+            }
+            
+            this.foodMoveInterval = setInterval(() => {
+                this.foodManager.repositionFood(this.players.map(p => p.snake));
+            }, moveInterval);
+        }
+
+        updateObstacles() {
+            // Make obstacles appear more gradually
+            // Add new obstacle every 100 points instead of 50
+            const desiredObstacles = Math.min(
+                Math.floor((this.players[0].score - 250) / 100) + 1,
+                this.maxObstacles
+            );
+            
+            while (this.obstacles.length < desiredObstacles) {
+                this.addObstacle();
+            }
+        }
+
+        addObstacle() {
+            let position;
+            do {
+                position = {
+                    x: Math.floor(Math.random() * config.gridSize),
+                    y: Math.floor(Math.random() * config.gridSize)
+                };
+            } while (
+                this.isPositionOccupied(position) ||
+                this.isNearSnake(position)
+            );
+            
+            this.obstacles.push(position);
+        }
+
+        isPositionOccupied(position) {
+            // Check if position collides with food
+            if (position.x === this.foodManager.position.x &&
+                position.y === this.foodManager.position.y) {
+                return true;
+            }
+            
+            // Check if position collides with obstacles
+            return this.obstacles.some(obstacle =>
+                obstacle.x === position.x && obstacle.y === position.y
+            );
+        }
+
+        isNearSnake(position) {
+            // Keep obstacles away from snake head
+            const head = this.players[0].snake[0];
+            const safeDistance = 2;
+            
+            return Math.abs(position.x - head.x) <= safeDistance &&
+                   Math.abs(position.y - head.y) <= safeDistance;
+        }
+
+        setupEventListeners() {
+            // Menu button listeners
+            const playBtn = document.getElementById('play-btn');
+            if (playBtn) {
+                playBtn.addEventListener('click', () => {
+                    this.soundFX.init(); // Initialize audio context
+                    this.stateManager.setState(GAME_STATES.PLAYING);
+                });
+            }
+
+            const howToPlayBtn = document.getElementById('how-to-play-btn');
+            if (howToPlayBtn) {
+                howToPlayBtn.addEventListener('click', () => {
+                    this.stateManager.setState(GAME_STATES.HOW_TO_PLAY);
+                });
+            }
+
+            const backToMenuBtn = document.getElementById('back-to-menu-btn');
+            if (backToMenuBtn) {
+                backToMenuBtn.addEventListener('click', () => {
+                    this.stateManager.setState(GAME_STATES.MENU);
+                });
+            }
+
+            const startBtn = document.getElementById('start-btn');
+            if (startBtn) {
+                startBtn.addEventListener('click', () => {
+                    this.stateManager.setState(GAME_STATES.PLAYING);
+                });
+            }
+
+            // Keyboard controls
+            document.addEventListener('keydown', (event) => {
+                if (this.stateManager.currentState !== GAME_STATES.PLAYING) return;
+
+                const keyMappings = {
+                    'ArrowUp': DIRECTIONS.UP,
+                    'ArrowDown': DIRECTIONS.DOWN,
+                    'ArrowLeft': DIRECTIONS.LEFT,
+                    'ArrowRight': DIRECTIONS.RIGHT
+                };
+
+                if (keyMappings[event.key]) {
+                    event.preventDefault();
+                    this.players[0].setDirection(keyMappings[event.key]);
+                }
+            });
+        }
+
+        gameOver() {
+            this.stopGame();
+            const finalScore = this.players[0].score;
+            document.getElementById('final-score').textContent = finalScore;
+            
+            // Update high score if necessary
+            const currentHighScore = parseInt(document.getElementById('high-score').textContent);
+            if (finalScore > currentHighScore) {
+                document.getElementById('high-score').textContent = finalScore;
+            }
+            
+            this.stateManager.setState(GAME_STATES.GAME_OVER);
+            this.soundFX.playGameOver();
+            
+            const head = this.players[0].snake[0];
+            const cellSize = this.renderer.cellSize;
+            for (let i = 0; i < 3; i++) {
+                setTimeout(() => {
+                    this.effectsManager.createExplosion(
+                        head.x * cellSize + cellSize/2,
+                        head.y * cellSize + cellSize/2,
+                        i === 0 ? '#ff0000' : i === 1 ? '#00ff00' : '#0000ff'
+                    );
+                }, i * 200);
+            }
+        }
+    }
+
+    // Initialize the game
+    window.onload = () => {
+        const gameCanvas = document.getElementById('gameCanvas');
+        const effectsCanvas = document.getElementById('effects-canvas');
+        const game = new GameController(gameCanvas, effectsCanvas);
+        
+        // Try to start audio context on various user interactions
+        ['click', 'touchstart', 'keydown'].forEach(eventType => {
+            document.addEventListener(eventType, async () => {
+                if (game.soundFX.audioContext.state === 'suspended') {
+                    await game.soundFX.audioContext.resume();
+                }
+            }, { once: true });
+        });
+    };
+</script>
+</body>
+</html>
